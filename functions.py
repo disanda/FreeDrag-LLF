@@ -391,96 +391,86 @@ from PIL import Image
 import torch
 import torch.nn.functional as F
 
-def image_inversion(image_real_or_path, generated_res, G_load):
+def image_inversion(image_real,generated_res,G_load):
+
+    if image_real.shape != (1024, 1024, 3): # 情况 1：若为 .pt 向量文件，直接生成图像
+        print(image_real.shape) # pt 文件：直接加载 latent
+        ws_trainable = torch.load(image_real).to(device)
+        ws_trainable = ws_trainable.unsqueeze(0).repeat(1, model.num_ws, 1)
+        _, image_generated = model.get_features(ws=ws_trainable, noise_mode='const')
+        image_show = to_image(image_generated)
+
+        add_watermark = torch.ones(1, device=device) if G_load.name == 'faces.pkl' else torch.zeros(1, device=device)
+        return ws_trainable, image_show, image_show, add_watermark
+
     model = G_load.g
     device = model.mapping.w_avg.device
     label = torch.zeros([1, model.c_dim], device=device)
-    
-    # transform 函数（仅用于图片）
-    data_tranform = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
-        transforms.Resize([generated_res, generated_res])
-    ])
+    data_tranform = transforms.Compose([transforms.ToTensor(),
+                    transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),transforms.Resize([generated_res,generated_res])])  #transform 函数（仅用于图片）
+    total_step = 1000
+    label = torch.zeros([1, model.c_dim], device=device)
 
-    # === 判断输入类型 === 
-    if isinstance(image_real_or_path, str):
-        suffix = Path(image_real_or_path).suffix.lower()
-        if suffix == ".pt": # 情况 1：若为 .pt 向量文件，直接生成图像
-            # pt 文件：直接加载 latent
-            ws_trainable = torch.load(image_real_or_path).to(device)
-            ws_trainable = ws_trainable.unsqueeze(0).repeat(1, model.num_ws, 1)
-            _, image_generated = model.get_features(ws=ws_trainable, noise_mode='const')
-            image_show = to_image(image_generated)
-
-            add_watermark = torch.ones(1, device=device) if G_load.name == 'faces.pkl' else torch.zeros(1, device=device)
-            return ws_trainable, image_show, image_show, add_watermark
-
-        elif suffix in [".jpg", ".jpeg", ".png", ".bmp", ".webp"]: # 情况 2：若为图片，执行优化反演流程
-            # 图片文件路径：读取图片
-            image_real = Image.open(image_real_or_path).convert("RGB")
-            filename_base = Path(image_real_or_path).stem
-        else:
-            raise ValueError(f"不支持的文件类型：{suffix}")
-
-    elif isinstance(image_real_or_path, Image.Image):
-        image_real = image_real_or_path
-        filename_base = "result_image"
-    else:
-        raise ValueError("输入既不是路径字符串也不是 Image 对象")
-
-    # 获取 latent mean/std
-    with torch.no_grad():
+    with torch.no_grad(): # 获取 latent mean/std
         noise_sample = torch.randn(10000, model.z_dim, device=device)
-        latent_out = model.get_ws(noise_sample, label)
-        latent_out_single = latent_out[:, 0, :]
+        latent_out = model.get_ws(noise_sample,label)
+        latent_out_single = latent_out[:,0,:]
         latent_mean = latent_out_single.mean(0)
-        latent_std = ((latent_out_single - latent_mean).pow(2).sum() / 10000) ** 0.5
+        latent_std = ((latent_out_single - latent_mean).pow(2).sum()/10000) ** 0.5
 
-
-    # 初始化优化变量
-    ws_mean = model.mapping.w_avg
+    ws_mean = model.mapping.w_avg # 初始化优化变量
     ws_trainable_single = ws_mean.unsqueeze(0).unsqueeze(0).clone().requires_grad_(True)
-    image_real = data_tranform(image_real_or_path).unsqueeze(0).to(device)
+    image_real = data_tranform(image_real).unsqueeze(0).to(device)
 
     current_res = 4
     noises_train = []
-    while current_res <= generated_res:
-        size = [1, current_res, current_res] if current_res == 4 else [2, current_res, current_res]
-        noises_train.append(torch.randn(size, device=device).requires_grad_(True))
+    while current_res<=generated_res:
+        if current_res == 4:
+            noises_train.append(torch.randn([1,current_res, current_res],device=device).requires_grad_(True))
+        else:
+            noises_train.append(torch.randn([2,current_res, current_res],device=device).requires_grad_(True))
         current_res *= 2
 
-    optimizer = torch.optim.Adam([ws_trainable_single] + noises_train, lr=0.1)
+    optimizer = torch.optim.Adam([ws_trainable_single]+noises_train, lr=0.1)
     scheduler_gen = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda_rule)
+    
     percept = lpips.LPIPS(net='vgg').to(device)
-
-    total_step = 1000
     for step in range(total_step):
-        noise_strength = latent_std * 0.05 * max(0, 1 - step / (0.75 * total_step)) ** 2
-        noise_latent = torch.randn_like(ws_trainable_single) * noise_strength
-        ws_addnoise = ws_trainable_single + noise_latent.detach()
-        ws_trainable = ws_addnoise.repeat(1, latent_out.shape[1], 1)
 
-        _, image_generated = model.get_features(ws=ws_trainable, noises=noises_train, noise_mode='trainable')
-        loss_percep = percept(F.interpolate(image_generated, size=(256, 256), mode='nearest'),
-                              F.interpolate(image_real.detach(), size=(256, 256), mode='nearest'))
-        loss_noise_regula = noise_regularize(noises_train)
-        loss = loss_percep + 1e5 * loss_noise_regula
+            noise_strength = latent_std * 0.05 * max(0, 1 - step/(0.75*total_step) ) ** 2
+            noise_latent = torch.randn_like(ws_trainable_single) * noise_strength
+            ws_addnoise = ws_trainable_single + noise_latent.detach()
 
-        loss.backward()
-        optimizer.step()
-        optimizer.zero_grad()
-        scheduler_gen.step()
-        noise_normalize_(noises_train)
+            ws_trainable = ws_addnoise.repeat(1,latent_out.shape[1],1)
+            _, image_generated = model.get_features(ws=ws_trainable, noises=noises_train, noise_mode='trainable')
+     
+            loss_percep = percept(F.interpolate(image_generated, size=(256,256), mode='nearest'),
+                                 F.interpolate(image_real.detach(), size=(256,256), mode='nearest'))
+            loss_noise_regula  = noise_regularize(noises_train)
+            loss = loss_percep + 1e5*loss_noise_regula 
 
+            loss.backward()
+            optimizer.step()
+            optimizer.zero_grad()
+            scheduler_gen.step()
+
+            noise_normalize_(noises_train)
     image_show = to_image(image_generated)
+    
+    if G_load.name == 'faces.pkl':
+        add_watermark = torch.ones(1,device=device)
+    else:
+        add_watermark = torch.zeros(1,device=device)
 
     # ======= 保存向量 ========
-    save_path = Path(f"./latents/{filename_base}.pt")
-    os.makedirs(save_path.parent, exist_ok=True)
-    torch.save(ws_trainable_single.detach().cpu(), save_path)
-
+    import os
+    from datetime import datetime
+    now = datetime.now()
+    formatted_time2 = now.strftime("%Y%m%d_%H%M%S")
+    os.makedirs('./latents/', exist_ok=True)
+    torch.save(ws_trainable_single.detach().cpu(), f"./latents/{formatted_time2}.pt")
     add_watermark = torch.ones(1, device=device) if G_load.name == 'faces.pkl' else torch.zeros(1, device=device)
+
     return ws_trainable, image_show, image_show, add_watermark
 
 

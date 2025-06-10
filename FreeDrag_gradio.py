@@ -175,7 +175,7 @@ def save_video(imgs_show_list,frame):
     return []
     
 CKPT_SIZE = {
-    'faces.pkl':[512, 0.3, 3],
+    'faces.pkl':[1024, 0.3, 3],
     'horses.pkl': [256, 0.3, 3], 
     'elephants.pkl': [512, 0.4, 4],
     'lions.pkl':[512, 0.4, 4],
