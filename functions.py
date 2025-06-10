@@ -403,23 +403,31 @@ def image_inversion(image_real_or_path, generated_res, G_load):
         transforms.Resize([generated_res, generated_res])
     ])
 
-    # ======= 情况 1：若为 .pt 向量文件，直接生成图像 ========
-    if isinstance(image_real_or_path, str) and image_real_or_path.endswith('.pt'):
-        pt_path = Path(image_real_or_path)
-        ws_trainable = torch.load(pt_path).to(device)
-        ws_trainable = ws_trainable.unsqueeze(0).repeat(1, model.num_ws, 1)  # [1, num_ws, dim]
-        _, image_generated = model.get_features(ws=ws_trainable, noise_mode='const')
-        image_show = to_image(image_generated)
+    # === 判断输入类型 === 
+    if isinstance(image_real_or_path, str):
+        suffix = Path(image_real_or_path).suffix.lower()
+        if suffix == ".pt": # 情况 1：若为 .pt 向量文件，直接生成图像
+            # pt 文件：直接加载 latent
+            ws_trainable = torch.load(image_real_or_path).to(device)
+            ws_trainable = ws_trainable.unsqueeze(0).repeat(1, model.num_ws, 1)
+            _, image_generated = model.get_features(ws=ws_trainable, noise_mode='const')
+            image_show = to_image(image_generated)
 
-        add_watermark = torch.ones(1, device=device) if G_load.name == 'faces.pkl' else torch.zeros(1, device=device)
-        return ws_trainable, image_show, image_show, add_watermark
+            add_watermark = torch.ones(1, device=device) if G_load.name == 'faces.pkl' else torch.zeros(1, device=device)
+            return ws_trainable, image_show, image_show, add_watermark
 
-    # ======= 情况 2：若为图片，执行优化反演流程 ========
-    if isinstance(image_real_or_path, Image.Image):
-        filename_base = getattr(image_real_or_path, "filename", "result_image")
-        filename_base = Path(filename_base).stem
+        elif suffix in [".jpg", ".jpeg", ".png", ".bmp", ".webp"]: # 情况 2：若为图片，执行优化反演流程
+            # 图片文件路径：读取图片
+            image_real = Image.open(image_real_or_path).convert("RGB")
+            filename_base = Path(image_real_or_path).stem
+        else:
+            raise ValueError(f"不支持的文件类型：{suffix}")
+
+    elif isinstance(image_real_or_path, Image.Image):
+        image_real = image_real_or_path
+        filename_base = "result_image"
     else:
-        raise ValueError("输入类型既不是图片也不是 .pt 文件。")
+        raise ValueError("输入既不是路径字符串也不是 Image 对象")
 
     # 获取 latent mean/std
     with torch.no_grad():
@@ -428,6 +436,7 @@ def image_inversion(image_real_or_path, generated_res, G_load):
         latent_out_single = latent_out[:, 0, :]
         latent_mean = latent_out_single.mean(0)
         latent_std = ((latent_out_single - latent_mean).pow(2).sum() / 10000) ** 0.5
+
 
     # 初始化优化变量
     ws_mean = model.mapping.w_avg
