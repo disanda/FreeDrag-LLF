@@ -10,7 +10,7 @@ import torch.nn.functional as F
 import torchvision.transforms as transforms
 import lpips
 
-def add_watermark_np(input_image_array, watermark_text="AI Generated"):
+def add_watermark_np(input_image_array, watermark_text=""):
     image = PIL.Image.fromarray(np.uint8(input_image_array)).convert("RGBA")
 
     # Initialize text image
@@ -391,18 +391,8 @@ from PIL import Image
 import torch
 import torch.nn.functional as F
 
+latent == 0:
 def image_inversion(image_real,generated_res,G_load):
-
-    if image_real.shape != (1024, 1024, 3): # 情况 1：若为 .pt 向量文件，直接生成图像
-        print(image_real.shape) # pt 文件：直接加载 latent
-        ws_trainable = torch.load(image_real).to(device)
-        ws_trainable = ws_trainable.unsqueeze(0).repeat(1, model.num_ws, 1)
-        _, image_generated = model.get_features(ws=ws_trainable, noise_mode='const')
-        image_show = to_image(image_generated)
-
-        add_watermark = torch.ones(1, device=device) if G_load.name == 'faces.pkl' else torch.zeros(1, device=device)
-        return ws_trainable, image_show, image_show, add_watermark
-
     model = G_load.g
     device = model.mapping.w_avg.device
     label = torch.zeros([1, model.c_dim], device=device)
@@ -410,6 +400,16 @@ def image_inversion(image_real,generated_res,G_load):
                     transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),transforms.Resize([generated_res,generated_res])])  #transform 函数（仅用于图片）
     total_step = 1000
     label = torch.zeros([1, model.c_dim], device=device)
+
+    if latent == 1: # 情况 1：若为 .pt 向量文件，直接生成图像
+        ws_trainable = torch.load('./latents/20250610_144148-00117.pt').to(device)
+        print(ws_trainable.shape)
+        ws_trainable = ws_trainable.repeat(1, model.num_ws, 1)
+        print(ws_trainable.shape)
+        _, image_generated = model.get_features(ws=ws_trainable, noise_mode='const')
+        image_show = to_image(image_generated)
+        add_watermark = torch.ones(1, device=device) if G_load.name == 'faces.pkl' else torch.zeros(1, device=device)
+        return ws_trainable, image_show, image_show, add_watermark
 
     with torch.no_grad(): # 获取 latent mean/std
         noise_sample = torch.randn(10000, model.z_dim, device=device)
